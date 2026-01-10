@@ -1,0 +1,8 @@
+*.ly
+*.txt
+dataset/**/*
+dataset_yolo/**/*
+runs/**/*
+dataset.zip
+*.pth
+*.pt
