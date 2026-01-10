@@ -1,5 +1,5 @@
 *.ly
-*.txt
+vocab*.txt
 dataset/**/*
 dataset_yolo/**/*
 runs/**/*
