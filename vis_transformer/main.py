@@ -1,5 +1,6 @@
 import pandas as pd  # 데이터프레임 로딩용 추가
 import torch
+from torch import GradScaler
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
@@ -15,47 +16,98 @@ from .dataset import SheetMusicDataset, collate_fn
 # 상단 import 추가
 from torch import amp
 
+# def train(model, dataloader, criterion, optimizer, device, tokenizer, scheduler=None):
+#     model.train()
+#     epoch_loss = 0
+#     progress_bar = tqdm(dataloader, desc="Training")
+    
+#     # [추가] GradScaler는 CUDA용이라 MPS에서는 보통 안 써도 되지만, 
+#     # PyTorch 최신 버전에서는 MPS도 scaler를 지원하기 시작했습니다. 
+#     # 안전하게 autocast만 먼저 적용해봅니다.
+
+#     for images, targets, target_lengths in progress_bar:
+#         images = images.to(device)
+#         targets = targets.to(device)
+#         target_lengths = target_lengths.to(device)
+
+#         optimizer.zero_grad()
+
+#         # [핵심] Autocast 적용 (MPS 모드)
+#         # 연산을 Float16으로 압축해서 수행합니다.
+#         with amp.autocast(device_type="mps", dtype=torch.float16):
+#             outputs = model(images)
+#             outputs = outputs.permute(1, 0, 2)
+#             log_probs = nn.functional.log_softmax(outputs, dim=2)
+#             input_lengths = torch.full(size=(images.size(0),), fill_value=outputs.size(0), dtype=torch.long).to(device)
+            
+#             loss = criterion(log_probs.cpu(), targets.cpu(), input_lengths.cpu(), target_lengths.cpu())
+
+#         # 역전파
+#         loss.backward()
+        
+#         # Gradient Clipping
+#         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+        
+#         optimizer.step()
+#         if scheduler:
+#             scheduler.step()
+
+#         epoch_loss += loss.item()
+#         progress_bar.set_postfix({"Loss": loss.item()})
+
+#     return epoch_loss / len(dataloader)
+
+
 def train(model, dataloader, criterion, optimizer, device, tokenizer, scheduler=None):
     model.train()
     epoch_loss = 0
     progress_bar = tqdm(dataloader, desc="Training")
     
-    # [추가] GradScaler는 CUDA용이라 MPS에서는 보통 안 써도 되지만, 
-    # PyTorch 최신 버전에서는 MPS도 scaler를 지원하기 시작했습니다. 
-    # 안전하게 autocast만 먼저 적용해봅니다.
+    scaler = torch.amp.GradScaler('cuda') # AMP 사용 (필수)
+    
+    # [설정] 실제로는 16개씩 넣지만, 4번 모아서 업데이트하므로 64개 효과
+    accumulation_steps = 4 
 
-    for images, targets, target_lengths in progress_bar:
+    optimizer.zero_grad() # 루프 시작 전 초기화
+
+    for idx, (images, targets, target_lengths) in enumerate(progress_bar):
         images = images.to(device)
         targets = targets.to(device)
         target_lengths = target_lengths.to(device)
 
-        optimizer.zero_grad()
-
-        # [핵심] Autocast 적용 (MPS 모드)
-        # 연산을 Float16으로 압축해서 수행합니다.
-        with amp.autocast(device_type="mps", dtype=torch.float16):
+        with torch.amp.autocast(device_type='cuda', dtype=torch.float16):
             outputs = model(images)
             outputs = outputs.permute(1, 0, 2)
             log_probs = nn.functional.log_softmax(outputs, dim=2)
             input_lengths = torch.full(size=(images.size(0),), fill_value=outputs.size(0), dtype=torch.long).to(device)
             
-            loss = criterion(log_probs.cpu(), targets.cpu(), input_lengths.cpu(), target_lengths.cpu())
+            loss = criterion(log_probs, targets, input_lengths, target_lengths)
+            
+            # [핵심 1] Loss를 나누기 (4번 더할 거니까 미리 1/4로 나눔)
+            loss = loss / accumulation_steps 
 
-        # 역전파
-        loss.backward()
+        # Backward (기울기 계산만 하고 업데이트는 아직 안 함)
+        scaler.scale(loss).backward()
         
-        # Gradient Clipping
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-        
-        optimizer.step()
-        if scheduler:
-            scheduler.step()
+        # [핵심 2] 정해진 횟수(4번)마다 업데이트
+        if (idx + 1) % accumulation_steps == 0:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+            
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
+            
+            # 스케줄러도 업데이트할 때만 스텝 밟기
+            if scheduler:
+                scheduler.step()
 
-        epoch_loss += loss.item()
-        progress_bar.set_postfix({"Loss": loss.item()})
+        # 로깅용으로는 다시 곱해서 원래 loss 값을 보여줌
+        current_loss = loss.item() * accumulation_steps
+        epoch_loss += current_loss
+        progress_bar.set_postfix({"Loss": current_loss})
 
     return epoch_loss / len(dataloader)
-
 
 def evaluate(model, dataloader, criterion, device, tokenizer):
     model.eval()
@@ -122,8 +174,8 @@ def evaluate(model, dataloader, criterion, device, tokenizer):
 
 def main():
     # --- [설정] ---
-    BATCH_SIZE = 32        # RAM 캐싱했으니 64도 거뜬함 (안되면 32로 줄이기)
-    LEARNING_RATE = 5e-4   # 1e-4 -> 2e-4 (배치 늘렸으니 조금 올림)
+    BATCH_SIZE = 16        # RAM 캐싱했으니 64도 거뜬함 (안되면 32로 줄이기)
+    LEARNING_RATE = 1e-3   # 1e-4 -> 2e-4 (배치 늘렸으니 조금 올림)
     EPOCHS = 80           # 넉넉하게 잡고 Early Stopping 하세요
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     if torch.backends.mps.is_available():
@@ -136,7 +188,7 @@ def main():
     tokenizer = Tokenizer(vocab_list)
 
     # 2. 데이터셋 준비 (Pandas로 먼저 읽기)
-    transform = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    transform = transforms.Normalize(mean=[0.5], std=[0.5])
 
     # JSONL 파일을 읽어서 DataFrame으로 만듭니다.
     print("📂 메타데이터 로딩 중...")
@@ -144,7 +196,7 @@ def main():
 
     # Dataset 생성 (여기서 RAM 캐싱이 일어남 - 시간 좀 걸림)
     full_dataset = SheetMusicDataset(
-        root_dir="dataset/train_resized",
+        root_dir="dataset/train",
         df=df,
         tokenizer=tokenizer,
         transform=transform
@@ -197,12 +249,12 @@ def main():
     # --- [학습 루프] ---
     for epoch in range(EPOCHS):
         train_loss = train(model, train_loader, criterion,
-                           optimizer, DEVICE, tokenizer)
+                           optimizer, DEVICE, tokenizer, scheduler=scheduler)
         val_loss, val_acc = evaluate(
             model, val_loader, criterion, DEVICE, tokenizer)
 
         # [중요] 스케줄러에게 정확도를 알려줌
-        scheduler.step(val_acc)
+        # scheduler.step(val_acc) # OneCycleLR을 사용하므로 주석처리
 
         # 현재 LR 찍어보기
         current_lr = optimizer.param_groups[0]['lr']

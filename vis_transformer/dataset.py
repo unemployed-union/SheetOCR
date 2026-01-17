@@ -25,14 +25,15 @@ class SheetMusicDataset(Dataset):
                 # 1. 이미지 로드 & 리사이즈
                 file_name = df.iloc[idx]['file_name']
                 img_path = os.path.join(self.root_dir, file_name)
-                img = Image.open(img_path).convert("RGB")
+                img = Image.open(img_path).convert("L")
                 img = img.resize(target_size, resample=resize_tool)
                 
                 # 2. [핵심] 바로 텐서(UInt8)로 변환해 저장!
                 # transforms.ToTensor()를 안 쓰고 numpy로 바꾼 뒤 torch로 감쌉니다.
                 # (H, W, C) -> (C, H, W) 순서 변경
-                img_np = np.array(img).transpose(2, 0, 1)
-                img_tensor = torch.from_numpy(img_np) # dtype=torch.uint8 (가벼움)
+                img_np = np.array(img)
+                img_tensor = torch.from_numpy(img_np).unsqueeze(0) # dtype=torch.uint8 (가벼움)
+
                 self.cached_tensors.append(img_tensor)
                 
                 # 3. 정답(Target)도 미리 텐서로 변환

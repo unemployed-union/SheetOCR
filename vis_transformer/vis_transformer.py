@@ -12,14 +12,14 @@ class SimpleViTForOCR(nn.Module):
         # 3. Transformer Encoder (Pre-Norm 적용!)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim, 
-            nhead=8, 
+            nhead=12, 
             dim_feedforward=4096, 
             dropout=0.1, 
             activation='gelu', # ReLU보다 부드러운 GELU 추천
             batch_first=True,
             norm_first=True  # <--- [핵심 1] 학습 안정성의 열쇠!
         )
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=6)
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=12)
 
         # 4. [핵심 2] 최종 LayerNorm
         self.norm = nn.LayerNorm(embed_dim)

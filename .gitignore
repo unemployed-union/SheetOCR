@@ -6,3 +6,6 @@ runs/**/*
 dataset.zip
 *.pth
 *.pt
+fonts/**/*
+*.out
+**/*.pyc
