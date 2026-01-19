@@ -10,3 +10,5 @@ dataset.zip
 fonts/**/*
 *.out
 **/*.pyc
+test_images
+fonts.zip
