@@ -7,7 +7,7 @@ class PatchEmbedding(nn.Module):
     1. 이미지를 패치로 자르고 (Conv2d)
     2. 위치 정보를 더해주는 (Sinusoidal PE) 역할
     """
-    def __init__(self, in_channels=3, patch_size=16, emb_size=384):
+    def __init__(self, in_channels=1, patch_size=8, emb_size=384):
         super().__init__()
         self.patch_size = patch_size
         self.emb_size = emb_size

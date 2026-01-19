@@ -7,6 +7,6 @@ runs/**/*
 dataset.zip
 *.pth
 *.pt
-test_images/은혜.jpg
-test_images/train_00000.jpg
-fonts.zip
+fonts/**/*
+*.out
+**/*.pyc
