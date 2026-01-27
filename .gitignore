@@ -3,6 +3,7 @@ fonts/**/*
 vocab*.txt
 dataset/**/*
 dataset_yolo/**/*
+dataset_vit
 runs/**/*
 dataset.zip
 *.pth
@@ -12,3 +13,5 @@ fonts/**/*
 **/*.pyc
 test_images
 fonts.zip
+.vscode
+**/*/__pycache__

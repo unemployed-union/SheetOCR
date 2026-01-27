@@ -1,5 +1,6 @@
 import pandas as pd  # 데이터프레임 로딩용 추가
 import torch
+import os
 from torch import GradScaler
 import torch.nn as nn
 import torch.optim as optim
@@ -13,62 +14,18 @@ from .tokenizer import Tokenizer
 from .vis_transformer import SimpleViTForOCR  # 직접 짠 커스텀 모델
 from .dataset import SheetMusicDataset, collate_fn
 
-# 상단 import 추가
-from torch import amp
-
-# def train(model, dataloader, criterion, optimizer, device, tokenizer, scheduler=None):
-#     model.train()
-#     epoch_loss = 0
-#     progress_bar = tqdm(dataloader, desc="Training")
-    
-#     # [추가] GradScaler는 CUDA용이라 MPS에서는 보통 안 써도 되지만, 
-#     # PyTorch 최신 버전에서는 MPS도 scaler를 지원하기 시작했습니다. 
-#     # 안전하게 autocast만 먼저 적용해봅니다.
-
-#     for images, targets, target_lengths in progress_bar:
-#         images = images.to(device)
-#         targets = targets.to(device)
-#         target_lengths = target_lengths.to(device)
-
-#         optimizer.zero_grad()
-
-#         # [핵심] Autocast 적용 (MPS 모드)
-#         # 연산을 Float16으로 압축해서 수행합니다.
-#         with amp.autocast(device_type="mps", dtype=torch.float16):
-#             outputs = model(images)
-#             outputs = outputs.permute(1, 0, 2)
-#             log_probs = nn.functional.log_softmax(outputs, dim=2)
-#             input_lengths = torch.full(size=(images.size(0),), fill_value=outputs.size(0), dtype=torch.long).to(device)
-            
-#             loss = criterion(log_probs.cpu(), targets.cpu(), input_lengths.cpu(), target_lengths.cpu())
-
-#         # 역전파
-#         loss.backward()
-        
-#         # Gradient Clipping
-#         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-        
-#         optimizer.step()
-#         if scheduler:
-#             scheduler.step()
-
-#         epoch_loss += loss.item()
-#         progress_bar.set_postfix({"Loss": loss.item()})
-
-#     return epoch_loss / len(dataloader)
-
 
 def train(model, dataloader, criterion, optimizer, device, tokenizer, scheduler=None):
     model.train()
     epoch_loss = 0
     progress_bar = tqdm(dataloader, desc="Training")
-    
-    scaler = torch.amp.GradScaler('cuda') # AMP 사용 (필수)
-    
-    # [설정] 실제로는 16개씩 넣지만, 4번 모아서 업데이트하므로 64개 효과
-    accumulation_steps = 4 
 
-    optimizer.zero_grad() # 루프 시작 전 초기화
+    scaler = torch.amp.GradScaler('cuda')  # AMP 사용 (필수)
+
+    # [설정] 실제로는 16개씩 넣지만, 4번 모아서 업데이트하므로 64개 효과
+    accumulation_steps = 4
+
+    optimizer.zero_grad()  # 루프 시작 전 초기화
 
     for idx, (images, targets, target_lengths) in enumerate(progress_bar):
         images = images.to(device)
@@ -79,28 +36,25 @@ def train(model, dataloader, criterion, optimizer, device, tokenizer, scheduler=
             outputs = model(images)
             outputs = outputs.permute(1, 0, 2)
             log_probs = nn.functional.log_softmax(outputs, dim=2)
-            input_lengths = torch.full(size=(images.size(0),), fill_value=outputs.size(0), dtype=torch.long).to(device)
-            
+            input_lengths = torch.full(size=(images.size(0),), fill_value=outputs.size(
+                0), dtype=torch.long).to(device)
+
             loss = criterion(log_probs, targets, input_lengths, target_lengths)
-            
+
             # [핵심 1] Loss를 나누기 (4번 더할 거니까 미리 1/4로 나눔)
-            loss = loss / accumulation_steps 
+            loss = loss / accumulation_steps
 
         # Backward (기울기 계산만 하고 업데이트는 아직 안 함)
         scaler.scale(loss).backward()
-        
-        # [핵심 2] 정해진 횟수(4번)마다 업데이트
-        if (idx + 1) % accumulation_steps == 0:
+
+        # [수정] 4번째 배치거나, 혹은 '마지막' 배치라면 업데이트!
+        if (idx + 1) % accumulation_steps == 0 or (idx + 1) == len(dataloader):
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-            
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
-            
-            # 스케줄러도 업데이트할 때만 스텝 밟기
-            if scheduler:
-                scheduler.step()
 
         # 로깅용으로는 다시 곱해서 원래 loss 값을 보여줌
         current_loss = loss.item() * accumulation_steps
@@ -108,6 +62,7 @@ def train(model, dataloader, criterion, optimizer, device, tokenizer, scheduler=
         progress_bar.set_postfix({"Loss": current_loss})
 
     return epoch_loss / len(dataloader)
+
 
 def evaluate(model, dataloader, criterion, device, tokenizer):
     model.eval()
@@ -174,48 +129,100 @@ def evaluate(model, dataloader, criterion, device, tokenizer):
 
 def main():
     # --- [설정] ---
-    BATCH_SIZE = 16        # RAM 캐싱했으니 64도 거뜬함 (안되면 32로 줄이기)
-    LEARNING_RATE = 1e-3   # 1e-4 -> 2e-4 (배치 늘렸으니 조금 올림)
-    EPOCHS = 80           # 넉넉하게 잡고 Early Stopping 하세요
+    BATCH_SIZE = 64        # RAM 캐싱했으니 64도 거뜬함 (안되면 32로 줄이기)
+    LEARNING_RATE = 1e-4   # 1e-4 -> 2e-4 (배치 늘렸으니 조금 올림)
+    EPOCHS = 100         # 넉넉하게 잡고 Early Stopping 하세요
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     if torch.backends.mps.is_available():
         DEVICE = "mps"  # Mac용
 
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+
     # 1. Tokenizer 로드
     vocab_list = []
+
+        # [수정 코드] 엔터와 리턴만 제거하고, 스페이스바는 살려둡니다.
     with open("vocab.txt", "r", encoding="utf-8") as f:
-        vocab_list = [line.strip('\n') for line in f.readlines()]
+        vocab_list = [line.replace('\n', '').replace('\r', '')
+                    for line in f.readlines()]
+
+    # [확인 사살용 코드 - 실행 시 콘솔에 뜸]
+    if ' ' in vocab_list:
+        print(f"✅ Vocab 로드 성공! 스페이스바가 {vocab_list.index(' ')}번 인덱스에 있습니다.")
+    else:
+        print("🚨 비상! 여전히 스페이스바가 Vocab 리스트에 없습니다.")
+        
     tokenizer = Tokenizer(vocab_list)
 
     # 2. 데이터셋 준비 (Pandas로 먼저 읽기)
-    transform = transforms.Normalize(mean=[0.5], std=[0.5])
+    # transform = transforms.Normalize(mean=[0.5], std=[0.5])
+    train_transform = transforms.Compose([
+        # 확률(p)을 0.5 -> 0.3으로 낮춤 (일단 쉬운 거 많이 보고 배우라고)
+        transforms.RandomApply([
+            transforms.GaussianBlur(kernel_size=(3, 5), sigma=(0.1, 1.5))
+        ], p=0.5),  # 30% 확률로만 흐리게
+
+        # 밝기 변화도 조금 약하게
+        transforms.ColorJitter(brightness=0.1, contrast=0.1),
+
+        transforms.RandomApply([
+            transforms.RandomAffine(
+                degrees=2,              # 회전 각도 줄임 (3 -> 2)
+                translate=(0.02, 0.02),  # 이동 범위 줄임
+                scale=(0.99, 1.02),
+                fill=0
+            )
+        ], p=0.5),  # 30% 확률로만 비틀기
+
+        transforms.Normalize(mean=[0.5], std=[0.5]),
+    ])
+
+    # 검증용: 깨끗하게 정규화만
+    val_transform = transforms.Normalize(mean=[0.5], std=[0.5])
 
     # JSONL 파일을 읽어서 DataFrame으로 만듭니다.
     print("📂 메타데이터 로딩 중...")
-    df = pd.read_json("dataset/train/metadata.jsonl", lines=True)
+    df = pd.read_json("dataset_vit/train_final/metadata.jsonl", lines=True)
 
-    # Dataset 생성 (여기서 RAM 캐싱이 일어남 - 시간 좀 걸림)
-    full_dataset = SheetMusicDataset(
-        root_dir="dataset/train",
-        df=df,
+    df = df.sample(frac=1).reset_index(drop=True)  # 전체 셔플
+    split_idx = int(0.9 * len(df))
+    train_df = df.iloc[:split_idx]
+    val_df = df.iloc[split_idx:]
+
+    # 학습 데이터셋 (Augmentation 적용!)
+    train_dataset = SheetMusicDataset(
+        root_dir="dataset_vit/train_final",
+        df=train_df,
         tokenizer=tokenizer,
-        transform=transform
+        transform=train_transform  # <-- 여기에 train_transform 적용
     )
 
-    # Train/Val 분리
-    train_size = int(0.9 * len(full_dataset))  # 검증 데이터 10%만
-    val_size = len(full_dataset) - train_size
-    train_dataset, val_dataset = random_split(
-        full_dataset, [train_size, val_size])
+    # 검증 데이터셋 (깨끗함)
+    val_dataset = SheetMusicDataset(
+        root_dir="dataset_vit/train_final",
+        df=val_df,
+        tokenizer=tokenizer,
+        transform=val_transform    # <-- 여기에 val_transform 적용
+    )
 
     # DataLoader (RAM 캐싱을 썼으므로 num_workers는 적어도 됨)
     train_loader = DataLoader(
-        train_dataset, batch_size=BATCH_SIZE, shuffle=True,
-        collate_fn=collate_fn, num_workers=0, pin_memory=False
+        train_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        collate_fn=collate_fn,
+        num_workers=4,      # 0 -> 4 (또는 8) 변경! (CPU가 병렬로 데이터 준비)
+        pin_memory=True     # False -> True 변경! (GPU 전송 가속)
     )
+
     val_loader = DataLoader(
-        val_dataset, batch_size=BATCH_SIZE, shuffle=False,
-        collate_fn=collate_fn, num_workers=0, pin_memory=False
+        val_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        collate_fn=collate_fn,
+        num_workers=4,      # 여기도 똑같이
+        pin_memory=True     # 여기도 똑같이
     )
 
     # 3. 모델 초기화 (Custom ViT)
@@ -224,8 +231,15 @@ def main():
         vocab_size=tokenizer.get_vocab_size(),
         embed_dim=384,   # ViT Small급
         # num_heads=6,     # 384 / 64 = 6
-        # num_layers=6     # 레이어 6개 (공부용으로 적당)
+        # num_layers=12     # 레이어 6개 (공부용으로 적당)
     ).to(DEVICE)
+
+    load_path = "final_model.pth" # 잘 됐던 그 파일
+
+    if os.path.exists(load_path):
+        print(f"🔥 {load_path} 로드! 70%에서 다시 등반 시작!")
+        # strict=True로 해서 확실하게 로드 (구조 안 바꿨으니까요)
+        model.load_state_dict(torch.load(load_path), strict=True)
 
     criterion = nn.CTCLoss(blank=0, zero_infinity=True)
     optimizer = optim.AdamW(
@@ -235,13 +249,12 @@ def main():
     # 정확도(Acc)가 안 오르면 LR을 깎습니다.
     # scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3)
 
-    scheduler = OneCycleLR(
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
-        max_lr=1e-3,              # 최대 학습률 (여기까지 찍고 내려옴)
-        epochs=EPOCHS,            # 전체 에폭 수
-        steps_per_epoch=len(train_loader),
-        pct_start=0.1,            # 전체 과정의 앞부분 10% 동안 LR을 올림 (Warm-up)
-        anneal_strategy='cos'     # 코사인 곡선으로 부드럽게
+        mode='max',
+        factor=0.5,
+        patience=5,      # 3은 너무 급함. 5번 정도는 참아주게 변경
+        min_lr=1e-6     # [중요] 아무리 깎아도 0.000001 밑으로는 안 내려감!
     )
 
     print(f"🔥 학습 시작! (Device: {DEVICE})")
@@ -269,6 +282,8 @@ def main():
         if val_acc > 80:  # 80% 넘으면 저장 시작
             torch.save(model.state_dict(),
                        f"model_epoch_{epoch+1}_acc_{val_acc:.1f}.pth")
+
+        scheduler.step(val_acc)
 
     # 최종 저장
     torch.save(model.state_dict(), "final_model.pth")

@@ -7,8 +7,19 @@ class Tokenizer:
         self.blank_token = 0
         
     def encode(self, text):
-        """텍스트 -> 숫자 리스트 변환"""
-        return [self.char_to_idx[c] for c in text if c in self.char_to_idx]
+        encoded = []
+        for c in text:
+            if c in self.char_to_idx:
+                encoded.append(self.char_to_idx[c])
+            else:
+                # [수정] 모르는 글자가 나오면 그냥 넘기지 말고 [UNK] 토큰으로 처리
+                # vocab에 [UNK]가 있다고 가정 (없으면 print로 경고라도 띄우세요)
+                unk_idx = self.char_to_idx.get('[UNK]', self.char_to_idx.get('<unk>', None))
+                if unk_idx:
+                    encoded.append(unk_idx)
+                else:
+                    print(f"⚠️ 경고: 글자 '{c}'가 Vocab에 없어 삭제되었습니다.")
+        return encoded
     
     def decode(self, indices):
         """숫자 리스트 -> 텍스트 변환 (CTC 디코딩 로직 포함)"""
