@@ -1,5 +1,5 @@
 import sys
-from .tokenizer import Tokenizer 
+from ..tokenizer import Tokenizer 
 
 # 1. Vocab 로드
 vocab_path = "vocab.txt"

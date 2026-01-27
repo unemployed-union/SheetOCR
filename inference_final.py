@@ -160,7 +160,7 @@ if __name__ == "__main__":
     YOLO_PATH = "runs/detect/train_result/weights/best.pt" # 혹은 train_result_hardcore 등
     VIT_PATH = "best_model_one.pth"
     VOCAB_PATH = "vocab.txt"
-    TEST_IMG = "test_images/은혜.jpg" # 테스트하고 싶은 이미지
+    TEST_IMG = "test_images/test.jpg" # 테스트하고 싶은 이미지
 
     # 2. 모델 로드
     detector, recognizer, tokenizer = load_models(YOLO_PATH, VIT_PATH, VOCAB_PATH, DEVICE)

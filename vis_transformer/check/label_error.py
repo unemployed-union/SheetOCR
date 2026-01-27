@@ -1,7 +1,7 @@
 # check_label_error.py
 import sys
 # main.py가 있는 폴더에서 실행한다고 가정
-from .tokenizer import Tokenizer 
+from ..tokenizer import Tokenizer 
 
 def test_tokenizer():
     print("🕵️‍♂️ 토크나이저 정밀 검사를 시작합니다...")

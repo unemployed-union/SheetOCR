@@ -2,8 +2,8 @@ import torch
 import pandas as pd
 import numpy as np
 from torch.utils.data import DataLoader
-from .dataset import SheetMusicDataset, collate_fn
-from .tokenizer import Tokenizer
+from ..dataset import SheetMusicDataset, collate_fn
+from ..tokenizer import Tokenizer
 import sys
 
 def check_data_text_only():
